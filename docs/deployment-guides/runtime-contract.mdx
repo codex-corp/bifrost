@@ -28,7 +28,7 @@ Keep the supplied entrypoint unless your own wrapper prepares `/app/data`, forwa
 
 ## Choose storage
 
-OSS Bifrost can store application configuration and request logs in SQLite or PostgreSQL. Bifrost Enterprise requires PostgreSQL 16 or later for both stores and does not support SQLite.
+OSS Bifrost can store application configuration in SQLite or PostgreSQL, and request logs in SQLite, PostgreSQL, or ClickHouse. Bifrost Enterprise requires PostgreSQL 16 or later for the config store and does not support SQLite; the logs store may use PostgreSQL 16+ or ClickHouse.
 
 <Note>
 Persistent `/app/data` storage is used only when the configuration store or log store uses SQLite. When both stores use PostgreSQL, Bifrost does not create or use the SQLite databases and the Helm chart does not create the Bifrost data PVC. The container still needs access to its application directory and `config.json` during startup.

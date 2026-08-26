@@ -9,8 +9,12 @@ Bifrost persists two types of data - **config** (providers, virtual keys, govern
 | Parameter | Description | Default |
 |-----------|-------------|---------|
 | `storage.mode` | Default backend for both stores (`sqlite` or `postgres`) | `sqlite` |
-| `storage.configStore.type` | Override backend for the config store | `""` (inherits `storage.mode`) |
-| `storage.logsStore.type` | Override backend for the logs store | `""` (inherits `storage.mode`) |
+| `storage.configStore.type` | Override backend for the config store (`sqlite` or `postgres`) | `""` (inherits `storage.mode`) |
+| `storage.logsStore.type` | Override backend for the logs store (`sqlite`, `postgres`, or `clickhouse`) | `""` (inherits `storage.mode`) |
+
+<Note>
+**ClickHouse is a logs-store-only backend.** The config store supports only `sqlite` and `postgres`. To use ClickHouse for logs, set `storage.logsStore.type: clickhouse` and keep the config store on SQLite or PostgreSQL — see [ClickHouse Logs Store](#clickhouse-logs-store) below.
+</Note>
 
 <Note>
 When any store uses SQLite the chart deploys a **StatefulSet** with a PVC. With PostgreSQL only (no SQLite) it deploys a **Deployment**. Mixing backends (e.g. config=postgres, logs=sqlite) still requires a StatefulSet.
@@ -325,6 +329,87 @@ storage:
 </Tab>
 
 </Tabs>
+
+---
+
+## ClickHouse Logs Store
+
+ClickHouse is a column-oriented backend for the **logs store**, built for high-volume log ingestion and fast analytical queries at scale. Set `storage.logsStore.type: clickhouse` and provide a `storage.logsStore.clickhouse` block. The config store stays on SQLite or PostgreSQL.
+
+<Note>
+ClickHouse applies to the logs store only. `storage.configStore.type` must remain `sqlite` or `postgres`. The chart does **not** deploy ClickHouse for you — point Bifrost at an existing ClickHouse instance (self-managed or ClickHouse Cloud).
+</Note>
+
+```bash
+kubectl create secret generic clickhouse-credentials \
+  --from-literal=password='your-clickhouse-password'
+```
+
+```yaml
+# clickhouse-logs-values.yaml
+image:
+  tag: "v1.4.11"
+
+storage:
+  mode: postgres            # config store backend
+  configStore:
+    type: postgres          # config store: sqlite or postgres only
+  logsStore:
+    type: clickhouse
+    clickhouse:
+      host: "clickhouse.default.svc.cluster.local"  # required
+      port: "9000"          # native 9000 (9440 TLS); http 8123 (8443 TLS)
+      database: "bifrost"
+      username: "default"
+      password: "env.CLICKHOUSE_PASSWORD"
+      protocol: "native"    # native or http
+      secure: false         # enable TLS
+      dialTimeout: 10000    # dial timeout in milliseconds
+      cluster: ""           # optional; runs DDL ON CLUSTER with replicated engines
+
+postgresql:
+  external:
+    enabled: true
+    host: "your-postgres-host.example.com"
+    port: 5432
+    user: bifrost
+    database: bifrost
+    sslMode: require
+    existingSecret: "postgres-credentials"
+    passwordKey: "password"
+
+# inject the ClickHouse password as an env var referenced by password: "env.CLICKHOUSE_PASSWORD" above
+env:
+  - name: CLICKHOUSE_PASSWORD
+    valueFrom:
+      secretKeyRef:
+        name: clickhouse-credentials
+        key: password
+
+bifrost:
+  encryptionKey: "your-32-byte-encryption-key-here"
+```
+
+```bash
+helm install bifrost bifrost/bifrost -f clickhouse-logs-values.yaml
+```
+
+| Parameter | Description | Default |
+|-----------|-------------|---------|
+| `storage.logsStore.type` | Set to `clickhouse` | `""` |
+| `storage.logsStore.clickhouse.host` | ClickHouse host (**required**) | - |
+| `storage.logsStore.clickhouse.port` | Port as a string. Defaults by protocol: native `9000` (`9440` TLS), http `8123` (`8443` TLS) | protocol-based |
+| `storage.logsStore.clickhouse.database` | Database name | `default` |
+| `storage.logsStore.clickhouse.username` | ClickHouse user | - |
+| `storage.logsStore.clickhouse.password` | ClickHouse password (supports `env.` prefix) | - |
+| `storage.logsStore.clickhouse.protocol` | Wire protocol: `native` or `http` | `native` |
+| `storage.logsStore.clickhouse.secure` | Enable TLS | `false` |
+| `storage.logsStore.clickhouse.dialTimeout` | Connection dial timeout in milliseconds | `10000` |
+| `storage.logsStore.clickhouse.cluster` | Optional cluster name; runs DDL `ON CLUSTER` with replicated engines | `""` |
+
+<Note>
+With ClickHouse, `storage.logsStore.retentionDays` (rendered as `retention_days`) is enforced by a native table **TTL**. The PostgreSQL-only `matviewRefreshInterval` setting has no effect on ClickHouse.
+</Note>
 
 ---
 

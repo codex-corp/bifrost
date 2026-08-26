@@ -9,7 +9,7 @@ Bifrost persists two types of data - **config** (providers, virtual keys, govern
 | Store | Purpose | Backends |
 |-------|---------|---------|
 | `config_store` | Provider configs, virtual keys, governance rules | SQLite, PostgreSQL |
-| `logs_store` | Request/response logs shown in UI | SQLite, PostgreSQL + optional S3/GCS offload |
+| `logs_store` | Request/response logs shown in UI | SQLite, PostgreSQL, ClickHouse + optional S3/GCS offload |
 | `vector_store` | Semantic response caching | Weaviate, Redis, Valkey, Qdrant, Pinecone |
 
 <Note>
@@ -221,6 +221,92 @@ For high log volumes, increase `max_open_conns`:
   }
 }
 ```
+
+</Tab>
+
+<Tab title="ClickHouse">
+
+### ClickHouse
+
+A column-oriented backend built for high-volume log ingestion and fast analytical queries. Best suited for large-scale deployments where log throughput and dashboard query performance on big time ranges matter more than operational simplicity.
+
+<Note>
+ClickHouse is a **`logs_store`-only** backend. The `config_store` supports only `sqlite` and `postgres` — pair a ClickHouse logs store with a SQLite or PostgreSQL config store (see [Mixed Backend Examples](#mixed-backend-examples)).
+</Note>
+
+```json
+{
+  "logs_store": {
+    "enabled": true,
+    "type": "clickhouse",
+    "retention_days": 30,
+    "config": {
+      "host": "env.CLICKHOUSE_HOST",
+      "port": "9000",
+      "database": "bifrost",
+      "username": "env.CLICKHOUSE_USER",
+      "password": "env.CLICKHOUSE_PASSWORD"
+    }
+  }
+}
+```
+
+`host` is the only required field; the rest have sensible defaults.
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `host` | - | **Required.** ClickHouse host (supports `env.` prefix) |
+| `port` | protocol-based | Port as a string. Defaults by protocol: native `9000` (`9440` with TLS), http `8123` (`8443` with TLS) |
+| `database` | `default` | Database name (supports `env.` prefix) |
+| `username` | - | ClickHouse user (supports `env.` prefix) |
+| `password` | - | ClickHouse password (supports `env.` prefix) |
+| `protocol` | `native` | Wire protocol: `"native"` or `"http"` |
+| `secure` | `false` | Enable TLS |
+| `dial_timeout` | `10000` | Connection dial timeout in **milliseconds** |
+| `cluster` | - | Optional cluster name. When set, DDL runs `ON CLUSTER` with replicated table engines for a clustered ClickHouse deployment |
+
+**TLS + HTTP protocol** against a managed ClickHouse (e.g. ClickHouse Cloud):
+
+```json
+{
+  "logs_store": {
+    "enabled": true,
+    "type": "clickhouse",
+    "retention_days": 30,
+    "config": {
+      "host": "env.CLICKHOUSE_HOST",
+      "port": "8443",
+      "database": "bifrost",
+      "username": "env.CLICKHOUSE_USER",
+      "password": "env.CLICKHOUSE_PASSWORD",
+      "protocol": "http",
+      "secure": true
+    }
+  }
+}
+```
+
+**Clustered ClickHouse** — set `cluster` so tables are created with replicated engines across the cluster:
+
+```json
+{
+  "logs_store": {
+    "enabled": true,
+    "type": "clickhouse",
+    "config": {
+      "host": "env.CLICKHOUSE_HOST",
+      "database": "bifrost",
+      "username": "env.CLICKHOUSE_USER",
+      "password": "env.CLICKHOUSE_PASSWORD",
+      "cluster": "my_cluster"
+    }
+  }
+}
+```
+
+<Note>
+With ClickHouse, `retention_days` is enforced by a native table **TTL** rather than a background delete job. `matview_refresh_interval` does not apply — it is a PostgreSQL-only setting for materialized views.
+</Note>
 
 </Tab>
 
@@ -571,9 +657,59 @@ Pinecone is external-only.
 
 ---
 
-## Mixed Backend Example
+## Mixed Backend Examples
 
-Run the config store on PostgreSQL (for UI) while keeping logs on SQLite (simpler, cheaper for append-heavy workloads):
+Each store is configured independently, so you can run the config store and logs store on **different backends — or even different database instances**. This is useful when config and logs have different scaling, cost, or retention profiles.
+
+<Note>
+In `config.json` each store carries its own `config` block, so the two stores can point at entirely separate hosts. (The Helm chart shares a single PostgreSQL connection across both stores — to split them across instances, configure `config.json` directly.)
+</Note>
+
+### Config on PostgreSQL #1, Logs on PostgreSQL #2
+
+Keep configuration on a small, highly-available Postgres while sending high-volume logs to a separate Postgres instance sized for write throughput — so log traffic never competes with config reads:
+
+```json
+{
+  "$schema": "https://www.getbifrost.ai/schema",
+  "encryption_key": "env.BIFROST_ENCRYPTION_KEY",
+
+  "config_store": {
+    "enabled": true,
+    "type": "postgres",
+    "config": {
+      "host": "env.PG_CONFIG_HOST",
+      "port": "5432",
+      "user": "env.PG_CONFIG_USER",
+      "password": "env.PG_CONFIG_PASSWORD",
+      "db_name": "bifrost_config",
+      "ssl_mode": "require",
+      "max_idle_conns": 5,
+      "max_open_conns": 50
+    }
+  },
+
+  "logs_store": {
+    "enabled": true,
+    "type": "postgres",
+    "config": {
+      "host": "env.PG_LOGS_HOST",
+      "port": "5432",
+      "user": "env.PG_LOGS_USER",
+      "password": "env.PG_LOGS_PASSWORD",
+      "db_name": "bifrost_logs",
+      "ssl_mode": "require",
+      "max_idle_conns": 10,
+      "max_open_conns": 200
+    },
+    "retention_days": 90
+  }
+}
+```
+
+### Config on PostgreSQL, Logs on ClickHouse
+
+Run configuration on PostgreSQL (transactional, backs the Web UI) while sending logs to ClickHouse for high-volume ingestion and fast analytics. ClickHouse is a logs-store-only backend, so this pairing is the recommended shape for analytics-heavy deployments:
 
 ```json
 {
@@ -595,10 +731,15 @@ Run the config store on PostgreSQL (for UI) while keeping logs on SQLite (simple
 
   "logs_store": {
     "enabled": true,
-    "type": "sqlite",
+    "type": "clickhouse",
     "config": {
-      "path": "./logs.db"
-    }
+      "host": "env.CLICKHOUSE_HOST",
+      "port": "9000",
+      "database": "bifrost",
+      "username": "env.CLICKHOUSE_USER",
+      "password": "env.CLICKHOUSE_PASSWORD"
+    },
+    "retention_days": 30
   }
 }
 ```
