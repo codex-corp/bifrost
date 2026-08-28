@@ -1,6 +1,7 @@
 package vertex
 
 import (
+	"bytes"
 	"fmt"
 	"strings"
 
@@ -378,4 +379,46 @@ func extractModelIDFromName(name string) string {
 		return parts[len(parts)-1]
 	}
 	return ""
+}
+
+// isAnthropicPassthroughPath reports whether a Vertex passthrough path targets an Anthropic
+// model. Anthropic on Vertex is served from the anthropic publisher via :rawPredict /
+// :streamRawPredict, whose payloads are Anthropic Messages shapes — not Gemini ones — so usage
+// must be parsed by the Anthropic parsers.
+func isAnthropicPassthroughPath(path string) bool {
+	if idx := strings.IndexByte(path, '?'); idx >= 0 {
+		path = path[:idx]
+	}
+	return strings.Contains(strings.ToLower(path), "/publishers/anthropic/")
+}
+
+var (
+	vertexBodyProjectsLit = []byte("projects/")
+	vertexLocationsLit    = []byte("/locations/")
+	vertexShortModelLit   = []byte(`"models/`)
+)
+
+// rewritePassthroughBody points a JSON passthrough body at the key's project and region: placeholder
+// project or location segments are replaced and short-form "models/X" names are expanded to full
+// resource paths. Returns the original slice with changed=false when there is nothing to rewrite.
+func rewritePassthroughBody(body []byte, projectID, region string) (out []byte, changed bool) {
+	hasProjects := bytes.Contains(body, vertexBodyProjectsLit)
+	hasLocations := bytes.Contains(body, vertexLocationsLit)
+	hasShortModel := bytes.Contains(body, vertexShortModelLit)
+	if !hasProjects && !hasLocations && !hasShortModel {
+		return body, false
+	}
+
+	out = body
+	if hasProjects {
+		out = vertexBodyProjectsRe.ReplaceAll(out, []byte("${1}projects/"+projectID))
+	}
+	if hasLocations {
+		out = vertexLocationsPathRe.ReplaceAll(out, []byte("/locations/"+region))
+	}
+	if hasShortModel {
+		out = vertexShortModelRe.ReplaceAll(out,
+			[]byte(`"projects/`+projectID+`/locations/`+region+`/publishers/google/$1"`))
+	}
+	return out, !bytes.Equal(out, body)
 }
