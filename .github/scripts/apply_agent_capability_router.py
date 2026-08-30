@@ -89,12 +89,22 @@ replace_once(
     "\tgovernance.PluginName,\n\tagentcapabilityrouter.PluginName,\n\totel.PluginName,\n",
 )
 
-# Wire the independent plugin module into the transports release graph.
+# Wire the independent plugin module into the transports release graph. The
+# module is local-only until its first upstream tag exists, so use a zero
+# pseudo-version plus an explicit relative replacement. This also makes
+# `cd transports && go mod tidy` deterministic outside workspace resolution.
 replace_once(
     "transports/go.mod",
     "\tgithub.com/maximhq/bifrost/framework v1.6.0\n\tgithub.com/maximhq/bifrost/plugins/compat v0.2.0\n",
-    "\tgithub.com/maximhq/bifrost/framework v1.6.0\n\tgithub.com/maximhq/bifrost/plugins/agentcapabilityrouter v0.1.0\n\tgithub.com/maximhq/bifrost/plugins/compat v0.2.0\n",
+    "\tgithub.com/maximhq/bifrost/framework v1.6.0\n"
+    "\tgithub.com/maximhq/bifrost/plugins/agentcapabilityrouter v0.0.0-00010101000000-000000000000\n"
+    "\tgithub.com/maximhq/bifrost/plugins/compat v0.2.0\n",
 )
+transports_mod = ROOT / "transports/go.mod"
+transports_mod_text = transports_mod.read_text(encoding="utf-8")
+local_replace = "replace github.com/maximhq/bifrost/plugins/agentcapabilityrouter => ../plugins/agentcapabilityrouter"
+if local_replace not in transports_mod_text:
+    transports_mod.write_text(transports_mod_text.rstrip() + f"\n\n{local_replace}\n", encoding="utf-8")
 
 # Keep dependency automation aware of the new Go module.
 replace_once(
