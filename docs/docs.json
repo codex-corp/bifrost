@@ -204,6 +204,8 @@
             "icon": "puzzle-piece",
             "pages": [
               "plugins/getting-started",
+
+              "plugins/agent-capability-router",
               "plugins/building-dynamic-binary",
               "plugins/sequencing",
               {
