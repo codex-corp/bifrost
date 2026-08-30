@@ -46,12 +46,28 @@ jobs:
           GOWORK: 'off'
         run: go mod tidy
 
-      - name: Set up repository workspace
-        shell: bash
-        run: source .github/workflows/scripts/setup-go-workspace.sh
+      - name: Set up temporary repository workspace
+        run: |
+          set -euo pipefail
+          workspace_dir=/tmp/bifrost-workspace
+          rm -rf "$workspace_dir"
+          mkdir -p "$workspace_dir"
+          cd "$workspace_dir"
+          go work init \
+            "$GITHUB_WORKSPACE/core" \
+            "$GITHUB_WORKSPACE/framework" \
+            "$GITHUB_WORKSPACE/transports" \
+            "$GITHUB_WORKSPACE/cli"
+          for plugin_dir in "$GITHUB_WORKSPACE"/plugins/*/; do
+            if [ -f "$plugin_dir/go.mod" ]; then
+              GOWORK="$workspace_dir/go.work" go work use "$plugin_dir"
+            fi
+          done
 
       - name: Tidy transports module with local plugin
         working-directory: transports
+        env:
+          GOWORK: /tmp/bifrost-workspace/go.work
         run: go mod tidy
 
       - name: Test capability router module
@@ -64,6 +80,8 @@ jobs:
 
       - name: Test native server registration
         working-directory: transports
+        env:
+          GOWORK: /tmp/bifrost-workspace/go.work
         run: go test ./bifrost-http/server -run TestAgentCapabilityRouterIsRegisteredAsBuiltin -count=1
 
       - name: Verify generated changes
@@ -76,9 +94,9 @@ jobs:
       - name: Commit prepared feature branch
         run: |
           set -euo pipefail
-          rm -f go.work go.work.sum
           rm -f .github/workflows/prepare-agent-capability-router.yml
           rm -f .github/scripts/apply_agent_capability_router.py
+          rm -f .github/scripts/prepare-trigger.txt
           git config user.name 'Hany alsamman'
           git config user.email 'hany@codexc.com'
           git add -A
