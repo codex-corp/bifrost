@@ -1,0 +1,91 @@
+name: Prepare native agent capability router
+
+on:
+  push:
+    branches:
+      - feat/agent-capability-router
+
+permissions:
+  contents: write
+
+concurrency:
+  group: prepare-agent-capability-router
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Check out feature branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: '1.27.0'
+          cache: false
+
+      - name: Apply native plugin changes
+        run: python3 .github/scripts/apply_agent_capability_router.py
+
+      - name: Format Go sources
+        run: |
+          gofmt -w \
+            plugins/agentcapabilityrouter/*.go \
+            transports/bifrost-http/server/plugins.go \
+            transports/bifrost-http/server/agentcapabilityrouter_test.go \
+            transports/bifrost-http/lib/config.go
+
+      - name: Resolve plugin module dependencies
+        working-directory: plugins/agentcapabilityrouter
+        env:
+          GOWORK: 'off'
+        run: go mod tidy
+
+      - name: Set up repository workspace
+        shell: bash
+        run: source .github/workflows/scripts/setup-go-workspace.sh
+
+      - name: Tidy transports module with local plugin
+        working-directory: transports
+        run: go mod tidy
+
+      - name: Test capability router module
+        working-directory: plugins/agentcapabilityrouter
+        env:
+          GOWORK: 'off'
+        run: |
+          go test ./... -count=1
+          go vet ./...
+
+      - name: Test native server registration
+        working-directory: transports
+        run: go test ./bifrost-http/server -run TestAgentCapabilityRouterIsRegisteredAsBuiltin -count=1
+
+      - name: Verify generated changes
+        run: |
+          grep -Fq '"plugins/agent-capability-router"' docs/docs.json
+          grep -Fq 'agentcapabilityrouter.PluginName' transports/bifrost-http/server/plugins.go
+          grep -Fq 'agentcapabilityrouter.PluginName' transports/bifrost-http/lib/config.go
+          git diff --check
+
+      - name: Commit prepared feature branch
+        run: |
+          set -euo pipefail
+          rm -f go.work go.work.sum
+          rm -f .github/workflows/prepare-agent-capability-router.yml
+          rm -f .github/scripts/apply_agent_capability_router.py
+          git config user.name 'Hany alsamman'
+          git config user.email 'hany@codexc.com'
+          git add -A
+          git commit -s -m '[feat]: add native agent capability router plugin' \
+            -m 'Changes:' \
+            -m '- plugins/agentcapabilityrouter/ - deterministic role and capability classification' \
+            -m '- transports/bifrost-http/ - opt-in built-in registration before routing rules' \
+            -m '- docs/plugins/ - configuration, rollout, and sequencing guidance' \
+            -m 'Relates to maximhq/bifrost#6646'
+          git push origin HEAD:feat/agent-capability-router
