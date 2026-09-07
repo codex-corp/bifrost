@@ -1,0 +1,119 @@
+name: Resolve Agent Capability Router Conflicts
+
+on:
+  push:
+    branches:
+      - tmp/resolve-agent-capability-conflicts
+
+permissions:
+  contents: write
+
+jobs:
+  resolve:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out target feature branch
+        uses: actions/checkout@v4
+        with:
+          ref: feat/agent-capability-router-rebased
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.27.0'
+
+      - name: Merge current upstream dev and resolve known conflicts
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git config user.name "Hany alsamman"
+          git config user.email "hany@codexc.com"
+          git remote add upstream https://github.com/maximhq/bifrost.git
+          git fetch upstream dev
+
+          echo "Feature head before merge: $(git rev-parse HEAD)"
+          echo "Upstream dev:             $(git rev-parse upstream/dev)"
+
+          set +e
+          git merge --no-ff --no-commit upstream/dev
+          merge_rc=$?
+          set -e
+
+          if [ "$merge_rc" -ne 0 ]; then
+            git diff --name-only --diff-filter=U | sort > /tmp/conflicts.txt
+            printf '%s\n' 'transports/changelog.md' 'transports/go.mod' | sort > /tmp/expected-conflicts.txt
+            echo "Conflicted files:"
+            cat /tmp/conflicts.txt
+            if ! diff -u /tmp/expected-conflicts.txt /tmp/conflicts.txt; then
+              echo "Unexpected conflict set; refusing to guess."
+              exit 1
+            fi
+          fi
+
+          # Keep the latest upstream changelog and re-apply this feature's entry.
+          git checkout --theirs transports/changelog.md
+          if ! grep -Fq '**Agent Capability Router**' transports/changelog.md; then
+            awk '
+              { print }
+              /^## ✨ Features$/ && !done {
+                print ""
+                print "- **Agent Capability Router** - Registers the native `agent-capability-router` plugin so configured dynamic agent aliases can be classified into deterministic role/capability lanes before CEL routing and model catalog resolution."
+                done=1
+              }
+            ' transports/changelog.md > transports/changelog.md.tmp
+            mv transports/changelog.md.tmp transports/changelog.md
+          fi
+
+          # Keep the latest upstream module graph, then add only the local native plugin edge.
+          git checkout --theirs transports/go.mod
+          (
+            cd transports
+            go mod edit -require=github.com/maximhq/bifrost/plugins/agentcapabilityrouter@v0.0.0-00010101000000-000000000000
+            go mod edit -replace=github.com/maximhq/bifrost/plugins/agentcapabilityrouter=../plugins/agentcapabilityrouter
+          )
+
+          git add transports/changelog.md transports/go.mod
+
+          if git diff --name-only --diff-filter=U | grep -q .; then
+            echo "Unresolved conflicts remain:"
+            git diff --name-only --diff-filter=U
+            exit 1
+          fi
+
+      - name: Validate merged branch
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          source .github/workflows/scripts/setup-go-workspace.sh
+
+          (
+            cd plugins/agentcapabilityrouter
+            go mod tidy
+          )
+          (
+            cd transports
+            go mod tidy
+          )
+
+          git diff --check
+          go test -race ./plugins/agentcapabilityrouter/...
+          go test ./transports/bifrost-http/server -run '^TestAgentCapabilityRouterIsRegisteredAsBuiltin$' -count=1
+          go vet ./plugins/agentcapabilityrouter/...
+
+          if git diff --name-only --diff-filter=U | grep -q .; then
+            echo "Unresolved conflicts appeared during validation."
+            exit 1
+          fi
+
+      - name: Commit and push merge
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git add -A
+          git status --short
+          git commit -s -m "chore: merge upstream dev into agent capability router"
+          git push origin HEAD:feat/agent-capability-router-rebased
