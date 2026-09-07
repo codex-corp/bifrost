@@ -52,7 +52,6 @@ jobs:
             fi
           fi
 
-          # Keep the latest upstream changelog and re-apply this feature's entry.
           git checkout --theirs transports/changelog.md
           if ! grep -Fq '**Agent Capability Router**' transports/changelog.md; then
             awk '
@@ -66,7 +65,6 @@ jobs:
             mv transports/changelog.md.tmp transports/changelog.md
           fi
 
-          # Keep the latest upstream module graph, then add only the local native plugin edge.
           git checkout --theirs transports/go.mod
           (
             cd transports
@@ -82,37 +80,73 @@ jobs:
             exit 1
           fi
 
-      - name: Validate merged branch
+      - name: Set up canonical Go workspace
         shell: bash
         run: |
           set -euo pipefail
-
           source .github/workflows/scripts/setup-go-workspace.sh
+          go env GOWORK
+          grep -n 'agentcapabilityrouter' go.work
 
-          (
-            cd plugins/agentcapabilityrouter
-            go mod tidy
-          )
-          (
-            cd transports
-            go mod tidy
-          )
+      - name: Tidy agent capability plugin
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd plugins/agentcapabilityrouter
+          go mod tidy
+          git status --short -- go.mod go.sum
 
+      - name: Tidy transports
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd transports
+          go mod tidy
+          git status --short -- go.mod go.sum
+
+      - name: Check merged diff
+        shell: bash
+        run: |
+          set -euo pipefail
           git diff --check
+          echo "Module-file status after tidy:"
+          git status --short -- plugins/agentcapabilityrouter/go.mod plugins/agentcapabilityrouter/go.sum transports/go.mod transports/go.sum
+          echo "Resolved transport module diff:"
+          git diff -- transports/go.mod transports/go.sum
+
+      - name: Test plugin with race detector
+        shell: bash
+        run: |
+          set -euo pipefail
           go test -race ./plugins/agentcapabilityrouter/...
+
+      - name: Test native HTTP registration
+        shell: bash
+        run: |
+          set -euo pipefail
           go test ./transports/bifrost-http/server -run '^TestAgentCapabilityRouterIsRegisteredAsBuiltin$' -count=1
+
+      - name: Vet plugin
+        shell: bash
+        run: |
+          set -euo pipefail
           go vet ./plugins/agentcapabilityrouter/...
 
+      - name: Verify merge state
+        shell: bash
+        run: |
+          set -euo pipefail
           if git diff --name-only --diff-filter=U | grep -q .; then
             echo "Unresolved conflicts appeared during validation."
+            git diff --name-only --diff-filter=U
             exit 1
           fi
+          git status --short
 
       - name: Commit and push merge
         shell: bash
         run: |
           set -euo pipefail
-
           git add -A
           git status --short
           git commit -s -m "chore: merge upstream dev into agent capability router"
